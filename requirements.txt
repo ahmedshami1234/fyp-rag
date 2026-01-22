@@ -1,0 +1,31 @@
+# Core Framework
+fastapi==0.109.0
+uvicorn[standard]==0.27.0
+python-multipart==0.0.6
+httpx==0.26.0
+pydantic==2.5.3
+pydantic-settings==2.1.0
+
+# Supabase
+supabase==2.3.4
+
+# OpenAI
+openai==1.12.0
+
+# Pinecone
+pinecone-client==3.0.2
+
+# Document Processing
+unstructured[all-docs]==0.12.4
+python-magic==0.4.27
+pdfminer.six==20231228
+pillow==10.2.0
+
+# Utilities
+python-dotenv==1.0.0
+tqdm==4.66.1
+tenacity==8.2.3
+aiofiles==23.2.1
+
+# Logging
+structlog==24.1.0
