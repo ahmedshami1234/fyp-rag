@@ -11,8 +11,10 @@ class ChunkData(BaseModel):
     content: str
     section_title: Optional[str] = None
     chunk_index: int
+    chunk_type: str = "text"  # "text" or "image"
     has_image: bool = False
     image_summary: Optional[str] = None
+    image_b64: Optional[str] = None  # Base64 encoded image for image chunks
     metadata: Dict[str, Any] = {}
 
 class ChunkResult(BaseModel):

@@ -1,9 +1,11 @@
 """
 Chunking Service
-Chunks documents by title using unstructured.io's chunking strategy.
+Chunks documents by title and extracts images as separate chunks.
 """
-from typing import List, Optional
+from typing import List, Optional, Tuple
 import structlog
+import base64
+import os
 
 from unstructured.documents.elements import Element, Title, Image, Table
 from unstructured.chunking.title import chunk_by_title
@@ -15,7 +17,7 @@ logger = structlog.get_logger()
 
 
 class ChunkingService:
-    """Chunks documents by title for semantic coherence."""
+    """Chunks documents by title and separates images as standalone chunks."""
     
     def __init__(self):
         self.settings = get_settings()
@@ -25,17 +27,18 @@ class ChunkingService:
         elements: List[Element],
         max_characters: Optional[int] = None,
         combine_text_under_n_chars: Optional[int] = None,
-    ) -> List[ChunkData]:
+    ) -> Tuple[List[ChunkData], List[ChunkData]]:
         """
         Chunk elements by title/heading boundaries.
+        Extracts images as separate chunks.
         
         Args:
             elements: List of parsed document elements
-            max_characters: Maximum characters per chunk (default from settings)
+            max_characters: Maximum characters per chunk
             combine_text_under_n_chars: Combine small sections under this limit
             
         Returns:
-            List of ChunkData objects ready for embedding
+            Tuple of (text_chunks, image_chunks)
         """
         max_chars = max_characters or self.settings.max_chunk_size
         combine_limit = combine_text_under_n_chars or (max_chars // 3)
@@ -43,76 +46,116 @@ class ChunkingService:
         logger.info(
             "Starting chunking",
             element_count=len(elements),
-            max_characters=max_chars,
-            combine_under=combine_limit
+            max_characters=max_chars
         )
         
-        # Use unstructured's chunk_by_title
-        chunked_elements = chunk_by_title(
-            elements,
-            max_characters=max_chars,
-            combine_text_under_n_chars=combine_limit,
-            new_after_n_chars=max_chars - 200,  # Soft limit before forcing split
-        )
+        # First pass: Extract images as separate elements
+        image_elements = []
+        text_elements = []
         
-        # Convert to ChunkData format
-        chunks = []
+        for el in elements:
+            if isinstance(el, Image):
+                image_elements.append(el)
+            elif self._has_image_in_orig(el):
+                # Extract images from composite elements
+                extracted = self._extract_images_from_composite(el)
+                image_elements.extend(extracted)
+                text_elements.append(el)  # Keep the text part
+            else:
+                text_elements.append(el)
+        
+        logger.info(f"🖼️ Extracted {len(image_elements)} images as separate chunks")
+        
+        # Create text chunks using standard chunking
+        text_chunks = []
         current_section = "Document Start"
         
-        for idx, chunk in enumerate(chunked_elements):
-            # Extract section title from metadata if available
-            if hasattr(chunk, 'metadata') and chunk.metadata:
-                if hasattr(chunk.metadata, 'section'):
-                    current_section = chunk.metadata.section or current_section
+        if text_elements:
+            chunked_elements = chunk_by_title(
+                text_elements,
+                max_characters=max_chars,
+                combine_text_under_n_chars=combine_limit,
+                new_after_n_chars=max_chars - 200,
+            )
             
-            # Determine if chunk contains visual elements
-            has_image = self._contains_visual_content(chunk)
+            for idx, chunk in enumerate(chunked_elements):
+                if hasattr(chunk, 'metadata') and chunk.metadata:
+                    if hasattr(chunk.metadata, 'section'):
+                        current_section = chunk.metadata.section or current_section
+                
+                content = self._get_chunk_text(chunk)
+                if not content.strip():
+                    continue
+                
+                chunk_data = ChunkData(
+                    content=content,
+                    section_title=current_section,
+                    chunk_index=idx,
+                    chunk_type="text",
+                    has_image=False,
+                    metadata={
+                        "element_type": type(chunk).__name__,
+                        "char_count": len(content),
+                    }
+                )
+                text_chunks.append(chunk_data)
+                
+                if isinstance(chunk, Title):
+                    current_section = content[:100]
+        
+        # Create image chunks (separate from text)
+        image_chunks = []
+        for idx, img_el in enumerate(image_elements):
+            image_path = self._get_image_path(img_el)
             
-            # Get the text content
-            content = self._get_chunk_text(chunk)
-            
-            if not content.strip():
-                continue  # Skip empty chunks
+            # Placeholder content - will be replaced with AI summary
+            content = f"[Image {idx + 1}]"
             
             chunk_data = ChunkData(
                 content=content,
                 section_title=current_section,
-                chunk_index=idx,
-                has_image=has_image,
+                chunk_index=len(text_chunks) + idx,
+                chunk_type="image",
+                has_image=True,
                 metadata={
-                    "element_type": type(chunk).__name__,
-                    "char_count": len(content),
+                    "element_type": "Image",
+                    "image_path": image_path,
                 }
             )
-            chunks.append(chunk_data)
-            
-            # Update section title if this is a title element
-            if isinstance(chunk, Title):
-                current_section = content[:100]  # Limit title length
+            image_chunks.append(chunk_data)
         
         logger.info(
             "Chunking complete",
-            chunk_count=len(chunks),
-            visual_chunks=sum(1 for c in chunks if c.has_image)
+            text_chunks=len(text_chunks),
+            image_chunks=len(image_chunks)
         )
         
-        return chunks
+        return text_chunks, image_chunks
     
-    def _contains_visual_content(self, element: Element) -> bool:
-        """Check if element or its children contain visual content."""
-        if isinstance(element, (Image, Table)):
-            return True
-        
-        # Check metadata for image references
+    def _has_image_in_orig(self, element: Element) -> bool:
+        """Check if composite element contains images in orig_elements."""
         if hasattr(element, 'metadata') and element.metadata:
-            if hasattr(element.metadata, 'image_path') and element.metadata.image_path:
-                return True
-            if hasattr(element.metadata, 'text_as_html') and element.metadata.text_as_html:
-                # Tables often have HTML representation
-                if '<table' in str(element.metadata.text_as_html).lower():
-                    return True
-        
+            orig = getattr(element.metadata, 'orig_elements', None)
+            if orig:
+                return any(isinstance(el, Image) for el in orig)
         return False
+    
+    def _extract_images_from_composite(self, element: Element) -> List[Element]:
+        """Extract Image elements from a composite element."""
+        images = []
+        if hasattr(element, 'metadata') and element.metadata:
+            orig = getattr(element.metadata, 'orig_elements', None)
+            if orig:
+                for el in orig:
+                    if isinstance(el, Image):
+                        images.append(el)
+        return images
+    
+    def _get_image_path(self, element: Element) -> Optional[str]:
+        """Get image path from element metadata."""
+        if hasattr(element, 'metadata') and element.metadata:
+            return getattr(element.metadata, 'image_path', None)
+        return None
     
     def _get_chunk_text(self, element: Element) -> str:
         """Extract text from a chunk element."""
@@ -121,41 +164,59 @@ class ChunkingService:
         else:
             text = str(element)
         
-        # If it's a table with HTML, include a note
         if isinstance(element, Table):
             if hasattr(element, 'metadata') and hasattr(element.metadata, 'text_as_html'):
                 text = f"[TABLE]\n{text}"
         
         return text.strip()
     
+    def encode_image_to_b64(self, image_path: str) -> Optional[str]:
+        """Encode an image file to base64 string."""
+        if not image_path or not os.path.exists(image_path):
+            return None
+        
+        try:
+            with open(image_path, "rb") as f:
+                data = f.read()
+            
+            # Determine MIME type
+            ext = os.path.splitext(image_path)[1].lower()
+            mime_map = {
+                ".png": "image/png",
+                ".jpg": "image/jpeg",
+                ".jpeg": "image/jpeg",
+                ".gif": "image/gif",
+                ".webp": "image/webp",
+            }
+            mime = mime_map.get(ext, "image/png")
+            
+            b64 = base64.b64encode(data).decode("utf-8")
+            return f"data:{mime};base64,{b64}"
+            
+        except Exception as e:
+            logger.error(f"Failed to encode image: {e}")
+            return None
+    
     def get_chunk_for_embedding(self, chunk: ChunkData) -> str:
         """
         Prepare chunk text for embedding.
-        Combines content with image summary if available.
-        
-        Args:
-            chunk: ChunkData object
-            
-        Returns:
-            Text ready for embedding
+        For image chunks, uses the AI summary.
         """
         parts = []
         
-        # Add section context
         if chunk.section_title:
             parts.append(f"Section: {chunk.section_title}")
         
-        # Add main content
-        parts.append(chunk.content)
-        
-        # Add image summary if available
-        if chunk.image_summary:
-            parts.append(f"\n[AI Visual Description]: {chunk.image_summary}")
+        if chunk.chunk_type == "image" and chunk.image_summary:
+            # For image chunks, embed the AI summary
+            parts.append(f"Image Description: {chunk.image_summary}")
+        else:
+            parts.append(chunk.content)
         
         return "\n\n".join(parts)
 
 
-# Singleton instance
+# Singleton
 _chunking_service: Optional[ChunkingService] = None
 
 

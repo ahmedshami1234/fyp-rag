@@ -68,3 +68,4 @@ htmlcov/
 
 # Supabase
 supabase/.temp/
+figures/

@@ -1,6 +1,6 @@
 """
 Vision Service
-Uses GPT-4o to generate summaries for visual content (images, tables, figures).
+Uses GPT-4o to generate summaries for images and visual content.
 """
 import base64
 import os
@@ -18,23 +18,28 @@ logger = structlog.get_logger()
 class VisionService:
     """Generates text summaries for visual content using GPT-4o Vision."""
     
-    VISION_PROMPT = """You are a document analysis assistant. Analyze the visual content provided and generate a concise, informative summary.
+    VISION_PROMPT = """You are a document analysis assistant. Analyze the image and generate a detailed, informative description.
 
-For TABLES:
-- Describe the structure (rows, columns)
-- Summarize the key data and patterns
-- Note any important values or trends
-
-For IMAGES/FIGURES/CHARTS:
-- Describe what the image shows
-- Explain any data, trends, or key information
-- Note labels, legends, and important details
+For CHARTS/GRAPHS:
+- Describe the type of chart (bar, line, pie, etc.)
+- Summarize the key data, trends, and patterns
+- Note axis labels, legends, and important values
 
 For DIAGRAMS:
 - Describe the components and their relationships
 - Explain the flow or structure being depicted
+- Note any labels or annotations
 
-Keep your summary factual and under 200 words. Focus on information that would be useful for semantic search and question answering."""
+For PHOTOS/ILLUSTRATIONS:
+- Describe what the image shows
+- Note any text visible in the image
+- Explain the context and purpose
+
+For TABLES:
+- Describe the structure (rows, columns)
+- Summarize the key data and patterns
+
+Keep your summary factual and under 200 words. Focus on information useful for semantic search."""
 
     def __init__(self):
         self.settings = get_settings()
@@ -44,58 +49,52 @@ Keep your summary factual and under 200 words. Focus on information that would b
         stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=1, min=2, max=10)
     )
-    async def summarize_visual(
-        self,
-        content: str,
-        image_path: Optional[str] = None,
-        context: Optional[str] = None
-    ) -> str:
+    async def summarize_image(self, image_path: str, context: Optional[str] = None) -> str:
         """
-        Generate a text summary for visual content.
+        Generate a text summary for an image using GPT-4o Vision.
         
         Args:
-            content: Text representation of the visual (table HTML, figure caption)
-            image_path: Optional path to image file for vision analysis
+            image_path: Path to the image file
             context: Optional surrounding text for better understanding
             
         Returns:
-            Text summary of the visual content
+            Text summary of the image
         """
-        logger.info("Generating visual summary", has_image=bool(image_path))
+        if not image_path or not os.path.exists(image_path):
+            return "[Image: File not found]"
         
-        messages = [
-            {"role": "system", "content": self.VISION_PROMPT}
-        ]
+        logger.info(f"🔍 AI Vision: Analyzing {os.path.basename(image_path)}...")
         
-        # Build user message
+        # Encode image
+        b64_image = self._encode_image(image_path)
+        
+        # Determine MIME type
+        ext = os.path.splitext(image_path)[1].lower()
+        mime_map = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp"}
+        mime = mime_map.get(ext, "image/png")
+        
+        # Build messages
+        messages = [{"role": "system", "content": self.VISION_PROMPT}]
+        
         user_content = []
-        
-        # Add context if available
         if context:
             user_content.append({
                 "type": "text",
-                "text": f"Context from document:\n{context[:500]}\n\n"
+                "text": f"Context from document:\n{context[:500]}\n\nDescribe this image:"
+            })
+        else:
+            user_content.append({
+                "type": "text",
+                "text": "Describe this image in detail:"
             })
         
-        # Add text content (table HTML, captions, etc.)
         user_content.append({
-            "type": "text",
-            "text": f"Visual content to analyze:\n{content}"
+            "type": "image_url",
+            "image_url": {
+                "url": f"data:{mime};base64,{b64_image}",
+                "detail": "high"
+            }
         })
-        
-        # Add image if available
-        if image_path and os.path.exists(image_path):
-            try:
-                base64_image = self._encode_image(image_path)
-                user_content.append({
-                    "type": "image_url",
-                    "image_url": {
-                        "url": f"data:image/jpeg;base64,{base64_image}",
-                        "detail": "high"
-                    }
-                })
-            except Exception as e:
-                logger.warning("Failed to encode image", error=str(e))
         
         messages.append({"role": "user", "content": user_content})
         
@@ -104,96 +103,89 @@ Keep your summary factual and under 200 words. Focus on information that would b
                 model=self.settings.vision_model,
                 messages=messages,
                 max_tokens=300,
-                temperature=0.3  # Lower temperature for factual descriptions
+                temperature=0.3
             )
             
             summary = response.choices[0].message.content
-            logger.info("Visual summary generated", length=len(summary))
+            snippet = summary[:80].replace('\n', ' ') + "..."
+            logger.info(f"✅ AI Vision: {snippet}")
             return summary
             
         except Exception as e:
-            logger.error("Failed to generate visual summary", error=str(e))
-            # Return a fallback description
-            return f"[Visual content: Unable to generate summary. Original content: {content[:200]}...]"
+            logger.error(f"Vision API failed: {e}")
+            return f"[Image: Unable to analyze - {str(e)[:50]}]"
     
-    async def process_visual_chunks(
+    async def process_image_chunks(
         self,
-        chunks: List[ChunkData]
+        image_chunks: List[ChunkData],
+        text_chunks: List[ChunkData],
+        chunking_service
     ) -> List[ChunkData]:
         """
-        Process all chunks and add summaries for visual content.
+        Process image chunks: generate AI summaries and encode to b64.
         
         Args:
-            chunks: List of ChunkData objects
+            image_chunks: List of image ChunkData objects
+            text_chunks: List of text chunks for context
+            chunking_service: ChunkingService instance for b64 encoding
             
         Returns:
-            Updated chunks with image_summary populated for visual chunks
+            Updated image chunks with content=summary and image_b64 set
         """
-        visual_chunks = [c for c in chunks if c.has_image]
-        logger.info("Processing visual chunks", count=len(visual_chunks))
+        if not image_chunks:
+            return image_chunks
         
-        for chunk in visual_chunks:
-            try:
-                # Get image path from metadata if available
-                image_path = chunk.metadata.get("image_path")
-                
-                # Get context from surrounding chunks
-                context = self._get_chunk_context(chunk, chunks)
-                
-                summary = await self.summarize_visual(
-                    content=chunk.content,
-                    image_path=image_path,
-                    context=context
-                )
-                
-                chunk.image_summary = summary
-                
-            except Exception as e:
-                logger.error(
-                    "Failed to process visual chunk",
-                    chunk_index=chunk.chunk_index,
-                    error=str(e)
-                )
-                chunk.image_summary = f"[Visual content at chunk {chunk.chunk_index}]"
+        logger.info(f"👁️ Processing {len(image_chunks)} image chunks with GPT-4o Vision...")
         
-        return chunks
+        for chunk in image_chunks:
+            image_path = chunk.metadata.get("image_path")
+            
+            if not image_path:
+                chunk.content = "[Image: No file path available]"
+                chunk.image_summary = chunk.content
+                continue
+            
+            # Get context from nearby text chunks
+            context = self._get_context_from_text_chunks(text_chunks)
+            
+            # Generate AI summary
+            summary = await self.summarize_image(image_path, context)
+            
+            # Set the summary as the content (this gets embedded)
+            chunk.content = summary
+            chunk.image_summary = summary
+            
+            # Encode image to b64 for metadata
+            chunk.image_b64 = chunking_service.encode_image_to_b64(image_path)
+            
+            if chunk.image_b64:
+                # Check size - Pinecone has 40KB metadata limit
+                b64_size = len(chunk.image_b64)
+                if b64_size > 35000:  # Leave room for other metadata
+                    logger.warning(f"⚠️ Image b64 too large ({b64_size} bytes), truncating...")
+                    # Store a note instead of the full image
+                    chunk.image_b64 = None
+                    chunk.metadata["image_too_large"] = True
+        
+        return image_chunks
     
     def _encode_image(self, image_path: str) -> str:
         """Encode image to base64."""
         with open(image_path, "rb") as f:
             return base64.b64encode(f.read()).decode("utf-8")
     
-    def _get_chunk_context(
-        self,
-        chunk: ChunkData,
-        all_chunks: List[ChunkData],
-        window: int = 1
-    ) -> str:
-        """Get surrounding context for a chunk."""
-        idx = chunk.chunk_index
-        context_parts = []
+    def _get_context_from_text_chunks(self, text_chunks: List[ChunkData], max_chars: int = 500) -> str:
+        """Get context from nearby text chunks."""
+        if not text_chunks:
+            return ""
         
-        # Get previous chunk
-        if idx > 0:
-            prev_chunk = next(
-                (c for c in all_chunks if c.chunk_index == idx - 1),
-                None
-            )
-            if prev_chunk:
-                context_parts.append(prev_chunk.content[:200])
-        
-        # Get next chunk
-        next_chunk = next(
-            (c for c in all_chunks if c.chunk_index == idx + 1),
-            None
-        )
-        if next_chunk:
-            context_parts.append(next_chunk.content[:200])
-        
-        return " ... ".join(context_parts)
+        # Use last few text chunks as context
+        context_chunks = text_chunks[-3:]
+        context = " ".join([c.content[:200] for c in context_chunks])
+        return context[:max_chars]
 
 
-# Singleton instance
+# Singleton
 _vision_service: Optional[VisionService] = None
 
 

@@ -73,22 +73,29 @@ class VectorStore:
         # Prepare vectors for upsert
         vectors = []
         for chunk, embedding in zip(chunks, embeddings):
+            metadata = {
+                "user_id": user_id,
+                "topic_id": topic_id,
+                "topic_name": topic_name,
+                "document_id": document_id,
+                "file_name": file_name,
+                "file_url": file_url,
+                "section_title": chunk.section_title or "",
+                "chunk_index": chunk.chunk_index,
+                "chunk_type": chunk.chunk_type,  # "text" or "image"
+                "has_image": chunk.has_image,
+                "content_preview": chunk.content[:500],
+                "full_content": chunk.content,
+            }
+            
+            # Add image_b64 for image chunks (if available and not too large)
+            if chunk.chunk_type == "image" and chunk.image_b64:
+                metadata["image_b64"] = chunk.image_b64
+            
             vector = {
                 "id": chunk.id,
                 "values": embedding,
-                "metadata": {
-                    "user_id": user_id,
-                    "topic_id": topic_id,
-                    "topic_name": topic_name,
-                    "document_id": document_id,
-                    "file_name": file_name,
-                    "file_url": file_url,
-                    "section_title": chunk.section_title or "",
-                    "chunk_index": chunk.chunk_index,
-                    "has_image": chunk.has_image,
-                    "content_preview": chunk.content[:500],  # Store preview for retrieval
-                    "full_content": chunk.content,  # Store full content
-                }
+                "metadata": metadata
             }
             vectors.append(vector)
         
@@ -252,6 +259,15 @@ class VectorStore:
         
         logger.info("User namespace deleted")
         return True
+    
+    # Alias methods for cleaner API
+    async def delete_by_document(self, user_id: str, document_id: str) -> bool:
+        """Alias for delete_document_vectors."""
+        return await self.delete_document_vectors(user_id, document_id)
+    
+    async def delete_by_topic(self, user_id: str, topic_id: str) -> bool:
+        """Alias for delete_topic_vectors."""
+        return await self.delete_topic_vectors(user_id, topic_id)
     
     async def get_stats(self, user_id: str) -> Dict[str, Any]:
         """

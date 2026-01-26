@@ -28,7 +28,8 @@ class DocumentParser:
     async def parse(
         self,
         file_path: str,
-        file_type: Optional[str] = None
+        file_type: Optional[str] = None,
+        image_output_dir: Optional[str] = None
     ) -> List[Element]:
         """
         Parse a document and extract structured elements.
@@ -36,6 +37,7 @@ class DocumentParser:
         Args:
             file_path: Path to the document
             file_type: Optional file type hint (pdf, docx, etc.)
+            image_output_dir: Directory to save extracted images
             
         Returns:
             List of unstructured Element objects
@@ -56,6 +58,8 @@ class DocumentParser:
             if file_type == "pdf":
                 kwargs["extract_images_in_pdf"] = True
                 kwargs["infer_table_structure"] = True
+                if image_output_dir:
+                    kwargs["image_output_dir_path"] = image_output_dir
             
             # For images, high resolution is usually required
             if file_type in ["png", "jpg", "jpeg", "webp"]:
