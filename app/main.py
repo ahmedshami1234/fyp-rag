@@ -91,6 +91,34 @@ class TopicResponse(BaseModel):
     description: Optional[str]
 
 
+class DocumentStatus(BaseModel):
+    document_id: str
+    file_name: str
+    status: str
+    processing_stage: Optional[str]
+    progress_percent: int
+    stage_details: Optional[str]
+    chunk_count: int
+    created_at: str
+
+
+# ═══════════════════════════════════════════════════════════════
+# PROGRESS TRACKING HELPER
+# ═══════════════════════════════════════════════════════════════
+
+def update_progress(doc_id: str, stage: str, percent: int, details: str = None):
+    """Update document progress in database."""
+    update_data = {
+        "processing_stage": stage,
+        "progress_percent": percent,
+    }
+    if details:
+        update_data["stage_details"] = details
+    
+    supabase.table("documents").update(update_data).eq("id", doc_id).execute()
+    logger.info(f"📊 Progress: {stage} - {percent}% - {details or ''}")
+
+
 # ═══════════════════════════════════════════════════════════════
 # API 1: UPLOAD FILE
 # ═══════════════════════════════════════════════════════════════
@@ -432,6 +460,37 @@ async def health_check():
 
 
 # ═══════════════════════════════════════════════════════════════
+# DOCUMENT STATUS (Progress Tracking)
+# ═══════════════════════════════════════════════════════════════
+
+@app.get("/documents/{document_id}/status", response_model=DocumentStatus)
+async def get_document_status(document_id: str):
+    """
+    Get detailed processing status for a single document.
+    
+    Use this to poll for progress updates during ingestion.
+    Frontend should poll every 5 seconds while status is 'processing'.
+    """
+    doc_result = supabase.table("documents").select("*").eq("id", document_id).execute()
+    
+    if not doc_result.data:
+        raise HTTPException(status_code=404, detail="Document not found")
+    
+    doc = doc_result.data[0]
+    
+    return DocumentStatus(
+        document_id=doc["id"],
+        file_name=doc["file_name"],
+        status=doc["status"],
+        processing_stage=doc.get("processing_stage"),
+        progress_percent=doc.get("progress_percent", 0),
+        stage_details=doc.get("stage_details"),
+        chunk_count=doc.get("chunk_count", 0),
+        created_at=str(doc["created_at"])
+    )
+
+
+# ═══════════════════════════════════════════════════════════════
 # INGESTION PIPELINE
 # ═══════════════════════════════════════════════════════════════
 
@@ -444,16 +503,16 @@ async def run_pipeline(
     file_name: str
 ) -> int:
     """
-    Execute the RAG ingestion pipeline.
+    Execute the RAG ingestion pipeline with progress tracking.
     
-    Steps:
-    1. Download file from storage
-    2. Detect file type
-    3. Parse document (Unstructured.io)
-    4. Chunk by title (separate text and images)
-    5. Process images with Vision LLM (GPT-4o)
-    6. Generate embeddings for all chunks
-    7. Store in Pinecone with image b64 in metadata
+    Stages with progress:
+    - downloading: 5%
+    - parsing: 20%
+    - chunking: 35%
+    - vision: 50-70% (incremental per image)
+    - embedding: 80%
+    - storing: 95%
+    - done: 100%
     """
     file_handler = get_file_handler()
     document_parser = get_document_parser()
@@ -465,36 +524,44 @@ async def run_pipeline(
     local_path = None
     
     try:
-        # Step 1: Download
-        logger.info("📥 Stage: Downloading file...")
+        # Step 1: Download (5%)
+        update_progress(document_id, "downloading", 5, "Fetching file from storage")
         local_path = await file_handler.download_file(file_url, file_name)
         
         # Step 2: Detect type
         _, file_type = file_handler.detect_file_type(local_path)
         
-        # Step 3: Parse
-        logger.info(f"📄 Stage: Parsing document - Type: {file_type}")
+        # Step 3: Parse (20%)
+        update_progress(document_id, "parsing", 20, f"Parsing {file_type.upper()} document")
         elements = await document_parser.parse(
             file_path=local_path,
             file_type=file_type,
             image_output_dir=file_handler._temp_dir
         )
         
-        # Step 4: Chunk (returns separate text and image chunks)
-        logger.info("✂️ Stage: Chunking into semantic sections...")
+        # Step 4: Chunk (35%)
+        update_progress(document_id, "chunking", 35, f"Extracted {len(elements)} elements")
         text_chunks, image_chunks = await chunking_service.chunk_elements(elements)
         
-        logger.info(f"   📝 Text chunks: {len(text_chunks)}")
-        logger.info(f"   🖼️ Image chunks: {len(image_chunks)}")
+        update_progress(document_id, "chunking", 40, f"{len(text_chunks)} text, {len(image_chunks)} images")
         
-        # Step 5: Process images with Vision LLM
+        # Step 5: Process images with Vision LLM (50-70%)
         if image_chunks:
-            logger.info(f"👁️ Stage: Processing {len(image_chunks)} images with GPT-4o Vision...")
-            image_chunks = await vision_service.process_image_chunks(
-                image_chunks=image_chunks,
-                text_chunks=text_chunks,
-                chunking_service=chunking_service
-            )
+            total_images = len(image_chunks)
+            for i, chunk in enumerate(image_chunks):
+                progress = 50 + int((i / total_images) * 20)  # 50% to 70%
+                update_progress(document_id, "vision", progress, f"Analyzing image {i+1} of {total_images}")
+                
+                # Process single image
+                image_path = chunk.metadata.get("image_path")
+                if image_path:
+                    context = vision_service._get_context_from_text_chunks(text_chunks)
+                    summary = await vision_service.summarize_image(image_path, context)
+                    chunk.content = summary
+                    chunk.image_summary = summary
+                    chunk.image_b64 = chunking_service.encode_image_to_b64(image_path)
+        else:
+            update_progress(document_id, "vision", 70, "No images to process")
         
         # Combine all chunks
         all_chunks = text_chunks + image_chunks
@@ -502,12 +569,12 @@ async def run_pipeline(
         if not all_chunks:
             raise ValueError("No chunks extracted from document")
         
-        # Step 6: Generate embeddings
-        logger.info(f"🔢 Stage: Generating embeddings for {len(all_chunks)} chunks...")
+        # Step 6: Generate embeddings (80%)
+        update_progress(document_id, "embedding", 80, f"Generating vectors for {len(all_chunks)} chunks")
         embeddings = await embedding_service.embed_chunks(all_chunks)
         
-        # Step 7: Store in Pinecone
-        logger.info("💾 Stage: Storing vectors in Pinecone...")
+        # Step 7: Store in Pinecone (95%)
+        update_progress(document_id, "storing", 95, "Uploading to vector database")
         await vector_store.upsert_vectors(
             chunks=all_chunks,
             embeddings=embeddings,
@@ -519,7 +586,9 @@ async def run_pipeline(
             file_url=file_url
         )
         
-        logger.info(f"🎉 Stage: Complete! {len(all_chunks)} chunks stored ({len(text_chunks)} text, {len(image_chunks)} images)")
+        # Complete (100%)
+        update_progress(document_id, "done", 100, f"Stored {len(all_chunks)} chunks successfully")
+        
         return len(all_chunks)
         
     finally:
