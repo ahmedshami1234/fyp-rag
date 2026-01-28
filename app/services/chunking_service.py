@@ -64,7 +64,19 @@ class ChunkingService:
             else:
                 text_elements.append(el)
         
-        logger.info(f"🖼️ Extracted {len(image_elements)} images as separate chunks")
+        # Filter images: keep only "meaningful" images (not icons, logos, decorative)
+        filtered_images = []
+        skipped_count = 0
+        for img_el in image_elements:
+            image_path = self._get_image_path(img_el)
+            if image_path and self._is_meaningful_image(image_path):
+                filtered_images.append(img_el)
+            else:
+                skipped_count += 1
+        
+        logger.info(
+            f"🖼️ Image filtering: {len(filtered_images)} kept, {skipped_count} skipped (icons/small)"
+        )
         
         # Create text chunks using standard chunking
         text_chunks = []
@@ -103,9 +115,9 @@ class ChunkingService:
                 if isinstance(chunk, Title):
                     current_section = content[:100]
         
-        # Create image chunks (separate from text)
+        # Create image chunks (only filtered meaningful images)
         image_chunks = []
-        for idx, img_el in enumerate(image_elements):
+        for idx, img_el in enumerate(filtered_images):
             image_path = self._get_image_path(img_el)
             
             # Placeholder content - will be replaced with AI summary
@@ -131,6 +143,38 @@ class ChunkingService:
         )
         
         return text_chunks, image_chunks
+    
+    def _is_meaningful_image(self, image_path: str) -> bool:
+        """
+        Filter out small icons, logos, and decorative images.
+        
+        Criteria:
+        - File size > 10KB (skip tiny icons)
+        - Image dimensions > 100x100 pixels (if detectable)
+        """
+        if not image_path or not os.path.exists(image_path):
+            return False
+        
+        # Check file size (skip if < 10KB)
+        file_size = os.path.getsize(image_path)
+        if file_size < 10 * 1024:  # 10KB
+            logger.debug(f"Skipping small image: {image_path} ({file_size} bytes)")
+            return False
+        
+        # Try to check dimensions using PIL if available
+        try:
+            from PIL import Image as PILImage
+            with PILImage.open(image_path) as img:
+                width, height = img.size
+                if width < 100 or height < 100:
+                    logger.debug(f"Skipping tiny image: {image_path} ({width}x{height})")
+                    return False
+        except ImportError:
+            pass  # PIL not available, skip dimension check
+        except Exception:
+            pass  # Can't read image, allow it through
+        
+        return True
     
     def _has_image_in_orig(self, element: Element) -> bool:
         """Check if composite element contains images in orig_elements."""

@@ -281,11 +281,14 @@ async def run_ingestion_worker(document_id: str):
         logger.info(f"✅ Worker complete: {document_id} ({chunk_count} chunks)")
         
     except Exception as e:
-        logger.error(f"❌ Worker failed: {document_id} - {str(e)}")
+        import traceback
+        logger.error(f"❌ Worker failed: {document_id}")
+        logger.error(f"   Error: {type(e).__name__}: {str(e)}")
+        logger.error(f"   Traceback: {traceback.format_exc()}")
         
         supabase.table("documents").update({
             "status": "failed",
-            "error_message": str(e)
+            "error_message": f"{type(e).__name__}: {str(e)[:500]}"
         }).eq("id", document_id).execute()
 
 
@@ -552,14 +555,14 @@ async def run_pipeline(
                 progress = 50 + int((i / total_images) * 20)  # 50% to 70%
                 update_progress(document_id, "vision", progress, f"Analyzing image {i+1} of {total_images}")
                 
-                # Process single image
+                # Process single image with Vision LLM
                 image_path = chunk.metadata.get("image_path")
                 if image_path:
                     context = vision_service._get_context_from_text_chunks(text_chunks)
                     summary = await vision_service.summarize_image(image_path, context)
                     chunk.content = summary
                     chunk.image_summary = summary
-                    chunk.image_b64 = chunking_service.encode_image_to_b64(image_path)
+                    # Note: Not storing image_b64 to avoid Pinecone metadata size limits
         else:
             update_progress(document_id, "vision", 70, "No images to process")
         

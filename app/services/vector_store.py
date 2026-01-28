@@ -73,6 +73,11 @@ class VectorStore:
         # Prepare vectors for upsert
         vectors = []
         for chunk, embedding in zip(chunks, embeddings):
+            # Limit full_content to prevent metadata size issues (Pinecone 40KB limit)
+            full_content = chunk.content
+            if len(full_content) > 8000:
+                full_content = full_content[:8000] + "..."
+            
             metadata = {
                 "user_id": user_id,
                 "topic_id": topic_id,
@@ -85,12 +90,17 @@ class VectorStore:
                 "chunk_type": chunk.chunk_type,  # "text" or "image"
                 "has_image": chunk.has_image,
                 "content_preview": chunk.content[:500],
-                "full_content": chunk.content,
+                "full_content": full_content,
             }
             
-            # Add image_b64 for image chunks (if available and not too large)
+            # Add image_b64 for image chunks (if small enough)
+            # Pinecone has 40KB metadata limit, so we limit b64 to ~30KB
             if chunk.chunk_type == "image" and chunk.image_b64:
-                metadata["image_b64"] = chunk.image_b64
+                if len(chunk.image_b64) < 30000:
+                    metadata["image_b64"] = chunk.image_b64
+                else:
+                    logger.warning(f"Skipping image_b64 (too large: {len(chunk.image_b64)} bytes)")
+                    metadata["image_too_large"] = True
             
             vector = {
                 "id": chunk.id,
