@@ -132,35 +132,80 @@ async def upload_file(
     """
     Upload a file to Supabase Storage and create a document record.
     
+    Supports: PDF, DOCX, PPTX, DOC, PPT, ODT, TXT, RTF
+    Non-PDF files are automatically converted to PDF before storage.
+    
     Returns a document_id to use with /ingest.
     """
+    from app.services.file_converter import get_file_converter
+    import tempfile
+    import shutil
+    
+    temp_input = None
+    temp_pdf = None
+    
     try:
         logger.info(f"📤 Uploading: {file.filename}")
         
-        # Generate unique storage path
-        file_ext = os.path.splitext(file.filename)[1]
-        unique_name = f"{uuid.uuid4()}{file_ext}"
+        # Get file extension and type
+        original_filename = file.filename
+        file_ext = os.path.splitext(original_filename)[1].lstrip('.').lower()
+        
+        # Check if format is supported
+        file_converter = get_file_converter()
+        if not file_converter.is_supported(file_ext):
+            raise HTTPException(
+                status_code=400, 
+                detail=f"Unsupported file format: {file_ext}. Supported: {file_converter.get_supported_extensions()}"
+            )
+        
+        # Read file content
+        content = await file.read()
+        
+        # Save to temp file for potential conversion
+        temp_input = tempfile.NamedTemporaryFile(suffix=f".{file_ext}", delete=False)
+        temp_input.write(content)
+        temp_input.close()
+        
+        # Convert to PDF if needed
+        if file_converter.needs_conversion(file_ext):
+            logger.info(f"🔄 Converting {file_ext.upper()} to PDF...")
+            pdf_path, was_converted = await file_converter.convert_to_pdf(temp_input.name, file_ext)
+            
+            # Read converted PDF
+            with open(pdf_path, 'rb') as f:
+                content = f.read()
+            
+            # Store as PDF
+            storage_ext = "pdf"
+            content_type = "application/pdf"
+            temp_pdf = pdf_path
+            logger.info(f"✅ Conversion complete")
+        else:
+            # Already PDF
+            storage_ext = file_ext
+            content_type = file.content_type or "application/pdf"
+        
+        # Generate unique storage path (always store as PDF internally)
+        unique_name = f"{uuid.uuid4()}.{storage_ext}"
         storage_path = f"{user_id}/{topic_id}/{unique_name}"
         
-        # Read and upload
-        content = await file.read()
-        file_type = file_ext.lstrip('.').lower() if file_ext else "unknown"
-        
+        # Upload to Supabase
         supabase.storage.from_(settings.supabase_storage_bucket).upload(
             path=storage_path,
             file=content,
-            file_options={"content-type": file.content_type}
+            file_options={"content-type": content_type}
         )
         
         logger.info(f"✅ Stored in Supabase: {storage_path}")
         
-        # Create document record
+        # Create document record (keep ORIGINAL filename for user display)
         doc_result = supabase.table("documents").insert({
             "user_id": user_id,
             "topic_id": topic_id,
-            "file_name": file.filename,
-            "file_path": storage_path,
-            "file_type": file_type,
+            "file_name": original_filename,  # User sees original name
+            "file_path": storage_path,       # Internal PDF path
+            "file_type": storage_ext,        # Stored as PDF
             "status": "pending"
         }).execute()
         
@@ -170,16 +215,24 @@ async def upload_file(
         return UploadResponse(
             document_id=document["id"],
             file_path=storage_path,
-            file_name=file.filename,
+            file_name=original_filename,  # Show original name to user
             user_id=user_id,
             topic_id=topic_id,
             status="pending",
             message="File uploaded. Use /ingest to process."
         )
         
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"❌ Upload failed: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Upload failed: {str(e)}")
+    finally:
+        # Clean up temp files
+        if temp_input and os.path.exists(temp_input.name):
+            os.unlink(temp_input.name)
+        if temp_pdf and os.path.exists(temp_pdf):
+            shutil.rmtree(os.path.dirname(temp_pdf), ignore_errors=True)
 
 
 # ═══════════════════════════════════════════════════════════════
