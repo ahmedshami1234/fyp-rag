@@ -53,6 +53,14 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Root redirect to docs
+from fastapi.responses import RedirectResponse
+
+@app.get("/")
+async def root():
+    """Redirect to API documentation."""
+    return RedirectResponse(url="/docs")
+
 
 # ═══════════════════════════════════════════════════════════════
 # REQUEST/RESPONSE MODELS
