@@ -16,18 +16,13 @@ openai>=1.12.0
 pinecone>=3.0.0
 
 # Document Processing
-numpy>=1.26.0,<2.0
-scipy>=1.13.0,<2.0
 unstructured[all-docs]>=0.18.0
 python-magic>=0.4.27
-pdfminer.six>=20231228
 pillow>=10.2.0
 
 # Utilities
 python-dotenv>=1.0.0
-tqdm>=4.66.1
 tenacity>=8.2.3
-aiofiles>=23.2.1
 
 # Logging
 structlog>=24.1.0
