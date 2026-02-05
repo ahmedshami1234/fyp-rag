@@ -28,4 +28,5 @@ tenacity>=8.2.3
 structlog>=24.1.0
 
 # Image Analysis (for smart filtering)
+PyWavelets>=1.5.0  # Explicit pin for Python 3.12 wheel compatibility
 imagehash>=4.3.1
