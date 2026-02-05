@@ -1,3 +1,12 @@
+---
+title: RAG Document Pipeline
+emoji: 📚
+colorFrom: blue
+colorTo: purple
+sdk: docker
+pinned: false
+---
+
 # Document Ingestion Pipeline
 
 Production-level RAG document ingestion pipeline with topic-based organization.
