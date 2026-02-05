@@ -15,8 +15,8 @@ openai>=1.12.0
 # Pinecone
 pinecone>=3.0.0
 
-# Document Processing
-unstructured[all-docs]>=0.18.0
+# Document Processing (PDF only - lighter for Railway builds)
+unstructured[pdf]>=0.18.0
 python-magic>=0.4.27
 pillow>=10.2.0
 
