@@ -64,16 +64,47 @@ class ChunkingService:
             else:
                 text_elements.append(el)
         
-        # Smart image filtering using ImageFilter
+        # Deduplicate image elements by file path
+        # hi_res strategy can detect the same image multiple times
+        # (top-level + inside composites, or multiple sub-regions)
         from app.services.image_filter import get_image_filter
         
         image_paths = []
         path_to_element = {}
+        no_path_count = 0
+        seen_paths = set()
+        duplicate_count = 0
+        
         for img_el in image_elements:
             path = self._get_image_path(img_el)
             if path:
+                if path in seen_paths:
+                    duplicate_count += 1
+                    continue  # Skip duplicate
+                seen_paths.add(path)
                 image_paths.append(path)
                 path_to_element[path] = img_el
+            else:
+                no_path_count += 1
+        
+        if duplicate_count > 0:
+            logger.info(
+                f"🔄 Deduplicated {duplicate_count} duplicate image element(s) "
+                f"(same image detected multiple times by parser)"
+            )
+        
+        if no_path_count > 0:
+            logger.warning(
+                f"⚠️ {no_path_count} image element(s) have no file path — "
+                f"these images were detected but not extracted to disk. "
+                f"Check if 'unstructured[all-docs]' is installed."
+            )
+        
+        logger.info(
+            f"🖼️ Found {len(image_elements)} image elements: "
+            f"{len(image_paths)} unique with paths, {duplicate_count} duplicates, "
+            f"{no_path_count} without paths"
+        )
         
         # Apply smart filtering (size, dimensions, aspect ratio, entropy, duplicates)
         image_filter = get_image_filter()

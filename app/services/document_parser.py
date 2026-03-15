@@ -46,46 +46,57 @@ class DocumentParser:
         
         try:
             # Configure partition based on file type
-            # Use 'auto' instead of 'hi_res' by default for better stability
-            # 'auto' will use 'hi_res' if models are available, otherwise 'fast'
             kwargs = {
                 "filename": file_path,
                 "strategy": "auto", 
                 "include_page_breaks": True,
             }
             
-            # For PDFs, attempt to extract visual info if strategy is likely to support it
+            # For PDFs, use hi_res to ensure image extraction works
             if file_type == "pdf":
+                kwargs["strategy"] = "hi_res"
                 kwargs["extract_images_in_pdf"] = True
                 kwargs["infer_table_structure"] = True
                 if image_output_dir:
                     kwargs["image_output_dir_path"] = image_output_dir
             
-            # For images, high resolution is usually required
+            # For images, high resolution is also required
             if file_type in ["png", "jpg", "jpeg", "webp"]:
                 kwargs["strategy"] = "hi_res"
             
             # Run partition with fallback
+            strategy_used = kwargs.get("strategy", "auto")
             try:
+                logger.info(f"Parsing with strategy='{strategy_used}'", path=file_path)
                 elements = partition(**kwargs)
             except Exception as parse_error:
                 logger.warning(
-                    "Primary parsing strategy failed, falling back to 'fast'",
+                    f"⚠️ Strategy '{strategy_used}' failed, falling back to 'fast'. "
+                    f"Images will NOT be extracted in fast mode.",
                     error=str(parse_error),
                     path=file_path
                 )
                 # Fallback to 'fast' strategy which is text-only but very robust
                 kwargs["strategy"] = "fast"
+                strategy_used = "fast"
                 # Remove visual extraction flags for fast strategy
                 kwargs.pop("extract_images_in_pdf", None)
                 kwargs.pop("infer_table_structure", None)
                 elements = partition(**kwargs)
             
+            element_types = self._count_element_types(elements)
             logger.info(
-                "Document parsed successfully",
+                f"Document parsed successfully (strategy='{strategy_used}')",
                 element_count=len(elements),
-                element_types=self._count_element_types(elements)
+                element_types=element_types
             )
+            
+            # Warn if no images were found with hi_res strategy
+            if strategy_used == "hi_res" and element_types.get("Image", 0) == 0:
+                logger.warning(
+                    "⚠️ hi_res strategy found 0 images. "
+                    "Ensure 'unstructured[all-docs]' is installed for full image extraction."
+                )
             
             return elements
             

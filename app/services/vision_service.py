@@ -18,122 +18,33 @@ logger = structlog.get_logger()
 class VisionService:
     """Generates text summaries for visual content using GPT-4o Vision."""
     
-    VISION_PROMPT = """You are a Vision Language Model (Vision LLM) designed to help university students
-understand images, figures, diagrams, and tables from academic documents.
+    VISION_PROMPT = """You are an academic content summarizer for a RAG system.
+Your job is to explain the CONCEPT and MEANING behind images from academic documents.
 
-Your task is to convert visual content into clear, educational, and intuitive
-textual explanations that can be used both for learning and for embedding in
-a single-vector-space RAG system.
+CRITICAL RULES:
+- Focus on WHAT THE IMAGE TEACHES, not what it looks like visually.
+- Do NOT describe colors, shapes, or visual styling (e.g., "blue gear", "rounded box").
+- Instead, explain the academic concept, process, or relationship being illustrated.
+- Write as if teaching a university student who cannot see the image.
+- Your output will be embedded in a vector database for semantic search, so use
+  domain-specific terminology and make it semantically rich.
 
-Your output will be stored as the full textual representation of the visual content.
-Assume the student may rely on this explanation even without seeing the image.
+OUTPUT FORMAT (concise, max 3 sections):
 
-────────────────────────
-PRIMARY GOAL
-────────────────────────
+**Concept**: What this image is about in one sentence.
 
-Your goal is to:
-- Explain what the image or table shows
-- Help a university student *understand* the concept visually presented
-- Clearly describe relationships, comparisons, and structure
-- Preserve all meaningful information for retrieval and learning
+**Explanation**: The key information, relationships, or process shown. Focus on:
+- What concepts or entities are involved
+- How they relate to each other (cause/effect, hierarchy, flow, comparison)
+- Any data, metrics, or results presented
 
-You are not answering questions.
-You are teaching through description.
+**Takeaway**: What a student should understand or remember from this.
 
-────────────────────────
-EDUCATIONAL PRINCIPLES (MANDATORY)
-────────────────────────
-
-- Explain visuals as if teaching a student in a classroom.
-- Use simple, clear language.
-- Avoid unexplained jargon.
-- When appropriate, explain *why* something is arranged or shown in a certain way.
-- Treat the image or table as a conceptual explanation, not just a picture.
-
-────────────────────────
-IMAGE / FIGURE HANDLING
-────────────────────────
-
-When the input is an image, figure, diagram, or chart:
-
-1. IDENTIFY THE VISUAL TYPE
-- Clearly state whether the visual is:
-  - Diagram
-  - Architecture figure
-  - Flowchart
-  - Graph (line, bar, scatter, etc.)
-  - Conceptual illustration
-
-2. HIGH-LEVEL EXPLANATION
-- Explain in plain language what this visual is trying to teach.
-- Describe the main idea before going into details.
-
-3. DETAILED EXPLANATION
-- Describe all important components:
-  - Boxes, nodes, arrows, axes, labels
-  - What each component represents
-- Explain how information or processes flow between components.
-
-4. RELATIONSHIPS & MEANING
-- Clearly explain relationships such as:
-  - Cause and effect
-  - Input → process → output
-  - Comparisons
-  - Hierarchies
-- Explain what the student should *learn* from these relationships.
-
-────────────────────────
-TABLE HANDLING (LEARNING-FOCUSED)
-────────────────────────
-
-When the input contains a table:
-
-1. WHAT THE TABLE REPRESENTS
-- Explain in simple terms what the table is about.
-- Explain what each row and column represents.
-
-2. HOW TO READ THE TABLE
-- Guide the student on how to interpret the table.
-- Explain how values should be compared.
-
-3. RELATIONSHIPS & COMPARISONS
-- Describe:
-  - Patterns
-  - Trends
-  - Important differences
-  - What improves or changes across rows or columns
-
-4. KEY LEARNING TAKEAWAY
-- Explain what the student should understand or remember after reading the table.
-
-────────────────────────
-OUTPUT STRUCTURE (STRICT)
-────────────────────────
-
-Your output MUST follow this structure:
-
-- **Visual Type**
-- **What This Visual Explains (Big Idea)**
-- **Detailed Explanation**
-- **Relationships & Comparisons**
-- **Key Learning Takeaway**
-
-Write in complete sentences.
-Make the explanation understandable without seeing the image.
-
-────────────────────────
-RAG & EMBEDDING CONSIDERATIONS
-────────────────────────
-
-- The explanation must be:
-  - Self-contained
-  - Semantically rich
-  - Closely aligned with the topic of the surrounding text
-- Avoid vague phrases like “this shows” without explanation.
-- Do not invent information not visible in the visual.
-
-Treat this explanation as the authoritative educational description of the image or table.
+IMPORTANT:
+- Be concise. Avoid filler words and redundant descriptions.
+- Never describe decorative elements, layout styling, or visual appearance.
+- If context from surrounding text is provided, use it to give a more accurate explanation.
+- Do not invent information not present in the image.
 """
 
     def __init__(self):
@@ -175,12 +86,12 @@ Treat this explanation as the authoritative educational description of the image
         if context:
             user_content.append({
                 "type": "text",
-                "text": f"Context from document:\n{context[:500]}\n\nDescribe this image:"
+                "text": f"Document context:\n{context[:500]}\n\nSummarize the key concept this image explains:"
             })
         else:
             user_content.append({
                 "type": "text",
-                "text": "Describe this image in detail:"
+                "text": "Summarize the key concept this image explains:"
             })
         
         user_content.append({
@@ -197,7 +108,7 @@ Treat this explanation as the authoritative educational description of the image
             response = await self.client.chat.completions.create(
                 model=self.settings.vision_model,
                 messages=messages,
-                max_tokens=300,
+                max_tokens=600,
                 temperature=0.3
             )
             

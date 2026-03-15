@@ -55,9 +55,9 @@ class TestImageFilter:
     
     def test_skip_small_dimensions(self, image_filter, temp_dir):
         """Test that images with small dimensions are skipped."""
-        # Create an image with dimensions under 200x200
+        # Create an image with dimensions under 80x80 (new threshold)
         small_dim_path = os.path.join(temp_dir, "small_dims.png")
-        self._create_test_image(small_dim_path, 150, 150)
+        self._create_test_image(small_dim_path, 60, 60)
         
         result = image_filter.filter_images([small_dim_path])
         
@@ -100,7 +100,7 @@ class TestImageFilter:
         
         result = image_filter.filter_images([wide_path])
         
-        # Aspect ratio 10:1 exceeds MAX_ASPECT_RATIO of 5.0
+        # Aspect ratio 10:1 exceeds MAX_ASPECT_RATIO of 8.0
         assert result.skip_reasons.get("bad_aspect_ratio", 0) > 0 or result.skipped_count > 0
     
     def test_skip_bad_aspect_ratio_thin(self, image_filter, temp_dir):
@@ -163,6 +163,65 @@ class TestImageFilter:
         
         assert len(result.kept_paths) == 0
         assert result.skipped_count == 0
+    
+    def test_skip_logo_image(self, image_filter, temp_dir):
+        """Test that small square images with few colors (logos) are skipped."""
+        from PIL import Image
+        logo_path = os.path.join(temp_dir, "logo.png")
+        # Create a small, square image with very few colors (logo characteristics)
+        img = Image.new('RGB', (150, 150), (255, 255, 255))
+        pixels = img.load()
+        # Draw a simple shape with only 3 colors total
+        for i in range(50, 100):
+            for j in range(50, 100):
+                pixels[i, j] = (0, 0, 200)
+        for i in range(60, 90):
+            for j in range(60, 90):
+                pixels[i, j] = (255, 0, 0)
+        img.save(logo_path)
+        
+        result = image_filter.filter_images([logo_path])
+        
+        # Should be skipped as logo (small, square, few colors)
+        assert result.skip_reasons.get("logo", 0) > 0 or result.skipped_count > 0
+    
+    def test_keep_table_like_image(self, image_filter, temp_dir):
+        """Test that table-like images with grid patterns are KEPT."""
+        from PIL import Image, ImageDraw
+        table_path = os.path.join(temp_dir, "table.png")
+        # Create a table-like image: larger, with many text-like variations
+        img = Image.new('RGB', (600, 400), (255, 255, 255))
+        draw = ImageDraw.Draw(img)
+        # Draw grid lines (table structure)
+        for y in range(0, 400, 40):
+            draw.line([(0, y), (600, y)], fill=(0, 0, 0), width=1)
+        for x in range(0, 600, 120):
+            draw.line([(x, 0), (x, 400)], fill=(0, 0, 0), width=1)
+        # Add varied pixel content to simulate text in cells
+        import random
+        random.seed(42)
+        for row in range(10):
+            for col in range(5):
+                x_start = col * 120 + 10
+                y_start = row * 40 + 10
+                for dx in range(0, 100, 4):
+                    for dy in range(0, 20, 4):
+                        c = random.randint(0, 180)
+                        draw.rectangle(
+                            [(x_start + dx, y_start + dy), 
+                             (x_start + dx + 3, y_start + dy + 3)],
+                            fill=(c, c, c)
+                        )
+        img.save(table_path, quality=95)
+        
+        file_size = os.path.getsize(table_path)
+        # Only assert if file is large enough to pass size threshold
+        if file_size >= 3 * 1024:
+            result = image_filter.filter_images([table_path])
+            assert len(result.kept_paths) == 1, (
+                f"Table image should be KEPT but was skipped. "
+                f"Skip reasons: {result.skip_reasons}"
+            )
 
 
 class TestImageFilterSingleton:
